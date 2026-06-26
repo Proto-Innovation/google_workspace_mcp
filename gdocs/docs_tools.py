@@ -110,6 +110,9 @@ async def search_docs(
             fields="files(id, name, createdTime, modifiedTime, webViewLink)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
+            # Proto patch: without corpora the API defaults to 'user' (My Drive
+            # only) and misses shared-drive docs. 'allDrives' spans both.
+            corpora="allDrives",
         )
         .execute
     )

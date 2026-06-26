@@ -262,6 +262,13 @@ def build_drive_list_params(
             list_params["corpora"] = "drive"
     elif corpora:
         list_params["corpora"] = corpora
+    else:
+        # Proto patch: with no drive_id and no explicit corpora, the Drive API
+        # falls back to corpora='user' (My Drive + shared-with-me) and silently
+        # omits shared-drive content. Default to 'allDrives' so a plain search
+        # reaches the team's shared drives. Valid here because supportsAllDrives
+        # and includeItemsFromAllDrives are already set above.
+        list_params["corpora"] = "allDrives"
 
     return list_params
 
