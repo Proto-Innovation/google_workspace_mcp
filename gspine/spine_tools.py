@@ -40,6 +40,10 @@ def _token() -> str:
     return _require("GSPINE_GITHUB_TOKEN", os.getenv("GSPINE_GITHUB_TOKEN"))
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 @server.tool(
     title="Read Project Spine File",
     annotations=ToolAnnotations(
@@ -59,3 +63,57 @@ async def spine_read(path: str, user_google_email: str = "") -> str:
     safe = safe_repo_path(_root(), path)
     return await github_client.get_contents(
         repo=_repo(), path=safe, ref=_branch(), token=_token())
+
+
+@server.tool(
+    title="Append Project Spine Log Entry",
+    annotations=ToolAnnotations(
+        readOnlyHint=False, destructiveHint=False,
+        idempotentHint=False, openWorldHint=True,
+    ),
+)
+async def spine_append_log(
+    entry_type: str,
+    body: str,
+    user_google_email: str = "",
+    subproject: str = "",
+    slug: str = "",
+    kind: str = "",
+    status: str = "",
+    location: str = "",
+) -> str:
+    """Append a NEW entry to this engagement's project-spine log. Creates a new
+    file log/<ts>-<author>-<type>.md and never edits existing files, so
+    concurrent writers can't collide. The author is the driving user; the commit
+    lands under the service account.
+
+    Args:
+        entry_type: decision | status | blocker | question | note | artifact
+        body: the entry text — prose, standalone.
+        subproject: optional subproject tag.
+        slug, kind, status, location: only for entry_type == 'artifact'.
+        user_google_email: the driving user's email (auto-filled).
+    """
+    author_email = await resolve_author_email(user_google_email)
+    logger.info(f"[spine_append_log] type={entry_type!r} author={author_email!r}")
+    relpath, content = build_log_entry(
+        ts=_utcnow_iso(),
+        author_email=author_email,
+        entry_type=entry_type,
+        body=body,
+        subproject=subproject or None,
+        slug=slug or None,
+        kind=kind or None,
+        status=status or None,
+        location=location or None,
+    )
+    safe = safe_repo_path(_root(), relpath)
+    result = await github_client.put_file(
+        repo=_repo(), path=safe,
+        message=f"spine({entry_type}): {author_email}",
+        text=content, branch=_branch(), token=_token(),
+        committer_name=os.getenv("GSPINE_COMMITTER_NAME", config.GSPINE_COMMITTER_NAME),
+        committer_email=os.getenv("GSPINE_COMMITTER_EMAIL", config.GSPINE_COMMITTER_EMAIL),
+    )
+    sha = result.get("commit", {}).get("sha", "?")[:7]
+    return f"Appended {safe} (commit {sha})"
