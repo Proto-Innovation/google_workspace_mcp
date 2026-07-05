@@ -22,6 +22,7 @@ secret, the rest as plain env):
 | `GSPINE_DEFAULT_BRANCH` | `main` | Optional; defaults to `main`. |
 | `GSPINE_COMMITTER_NAME` | `Proto Automation` | Optional. |
 | `GSPINE_COMMITTER_EMAIL` | `automation@wearepro.to` | Optional. |
+| `GSPINE_ALLOW_REPO_ROOT` | (unset) | Set truthy ONLY to intentionally allow whole-repo access with no path prefix. Leave unset for account isolation. |
 
 **Rebuild caveat:** any image rebuild must keep `--extra valkey` in the
 Dockerfile `uv sync` line, or the OAuth session store falls back to in-memory
@@ -30,4 +31,6 @@ and connectors drop.
 **Isolation:** `GSPINE_PATH_ROOT` is enforced in-process by `safe_repo_path`;
 one account per connector instance. NDA-sensitive accounts must run their own
 instance — never share a repo across accounts on a single instance without the
-root set.
+root set. An unset `GSPINE_PATH_ROOT` now fails closed (raises rather than
+granting whole-repo access); set `GSPINE_ALLOW_REPO_ROOT=1` to opt in
+intentionally.

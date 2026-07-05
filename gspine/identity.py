@@ -6,13 +6,18 @@ from fastmcp.server.dependencies import get_context
 
 
 async def resolve_author_email(user_google_email: str | None) -> str:
+    ctx = None
     try:
         ctx = get_context()
+    except Exception:
+        ctx = None
+    if ctx is not None:
+        # A context exists: trust ONLY the authenticated identity it carries.
+        # If reading it errors, let that propagate (fail closed) rather than
+        # falling back to the caller-supplied, spoofable parameter.
         email = await ctx.get_state("authenticated_user_email")
         if email:
             return email
-    except Exception:
-        pass
     if user_google_email:
         return user_google_email
     raise ValueError(

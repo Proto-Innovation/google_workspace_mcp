@@ -33,7 +33,13 @@ def _branch() -> str:
 
 
 def _root() -> str:
-    return os.getenv("GSPINE_PATH_ROOT", config.GSPINE_PATH_ROOT)
+    root = os.getenv("GSPINE_PATH_ROOT", config.GSPINE_PATH_ROOT)
+    if not root and not (os.getenv("GSPINE_ALLOW_REPO_ROOT") or config.GSPINE_ALLOW_REPO_ROOT):
+        raise ValueError(
+            "GSPINE_PATH_ROOT is not set. Refusing whole-repo access; set the account "
+            "root, or set GSPINE_ALLOW_REPO_ROOT=1 to intentionally use the repo root."
+        )
+    return root
 
 
 def _token() -> str:

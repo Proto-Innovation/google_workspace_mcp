@@ -50,6 +50,7 @@ GSPINE_DEFAULT_BRANCH = os.getenv("GSPINE_DEFAULT_BRANCH", "main")
 GSPINE_PATH_ROOT = os.getenv("GSPINE_PATH_ROOT", "")         # e.g. "projects/clients/powerschool"
 GSPINE_COMMITTER_NAME = os.getenv("GSPINE_COMMITTER_NAME", "Proto Automation")
 GSPINE_COMMITTER_EMAIL = os.getenv("GSPINE_COMMITTER_EMAIL", "automation@wearepro.to")
+GSPINE_ALLOW_REPO_ROOT = os.getenv("GSPINE_ALLOW_REPO_ROOT")  # set truthy to intentionally allow repo-root (no path prefix)
 
 # Re-export OAuth functions for backward compatibility
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "GSPINE_PATH_ROOT",
     "GSPINE_COMMITTER_NAME",
     "GSPINE_COMMITTER_EMAIL",
+    "GSPINE_ALLOW_REPO_ROOT",
     "get_oauth_base_url",
     "get_oauth_redirect_uri",
     "set_transport_mode",

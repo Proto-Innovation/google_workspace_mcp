@@ -29,3 +29,12 @@ async def test_raises_when_no_identity_anywhere():
     with patch("gspine.identity.get_context", return_value=ctx):
         with pytest.raises(ValueError):
             await identity.resolve_author_email("")
+
+
+@pytest.mark.asyncio
+async def test_get_state_error_fails_closed():
+    ctx = MagicMock()
+    ctx.get_state = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch("gspine.identity.get_context", return_value=ctx):
+        with pytest.raises(RuntimeError):
+            await identity.resolve_author_email("attacker@evil.com")
