@@ -180,3 +180,10 @@ appscript:
     - list_script_processes
     - get_script_metrics
   complete: []
+
+spine:
+  core:
+    - spine_read
+    - spine_append_log
+  extended: []
+  complete: []

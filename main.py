@@ -189,6 +189,7 @@ SERVICE_MODULES = {
     "contacts": "gcontacts.contacts_tools",
     "search": "gsearch.search_tools",
     "appscript": "gappsscript.apps_script_tools",
+    "spine": "gspine.spine_tools",
 }
 VALID_SERVICES = frozenset(SERVICE_MODULES)
 
@@ -577,6 +578,7 @@ def main():
         "contacts": "👤",
         "search": "🔍",
         "appscript": "📜",
+        "spine": "🧬",
     }
 
     # Determine which tools to import based on arguments
