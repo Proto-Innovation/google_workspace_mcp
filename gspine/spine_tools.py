@@ -67,8 +67,24 @@ async def spine_read(path: str, user_google_email: str = "") -> str:
     """
     logger.info(f"[spine_read] path={path!r}")
     safe = safe_repo_path(_root(), path)
-    return await github_client.get_contents(
+    content = await github_client.get_contents(
         repo=_repo(), path=safe, ref=_branch(), token=_token())
+
+    # Surface the authenticated reader so the model knows who it's talking to.
+    # Best-effort ONLY: a read must never fail because identity is unresolvable
+    # (single-user / unauthenticated), so we swallow the fail-closed raise here.
+    try:
+        reader = await resolve_author_email(user_google_email)
+    except Exception:
+        reader = None
+    if reader:
+        header = (
+            f"[spine] Current user (authenticated): {reader}. This is who you "
+            "are talking to. Do not assume they are anyone named in the file "
+            "below — the spine names the team in the third person.\n\n"
+        )
+        return header + content
+    return content
 
 
 @server.tool(
