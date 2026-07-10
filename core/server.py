@@ -306,6 +306,45 @@ def _parse_bool_env(value: str) -> bool:
     return value.lower() in ("1", "true", "yes", "on")
 
 
+def _allow_storage_fallback() -> bool:
+    """Whether a failed OAuth-proxy storage backend may fall back to in-memory.
+
+    Defaults to False: on multi-instance or restart-prone hosts an in-memory
+    store silently invalidates every user's connection, so a broken valkey
+    setup should abort startup instead.
+    """
+    return _parse_bool_env(
+        os.getenv("WORKSPACE_MCP_OAUTH_PROXY_ALLOW_STORAGE_FALLBACK", "")
+    )
+
+
+def _fastmcp_access_token_expiry_seconds() -> Optional[int]:
+    """Optional lifetime for FastMCP-issued access tokens (JWT), from env.
+
+    Decouples the client-facing token TTL from Google's ~1h expires_in; the
+    upstream token is still re-validated and refreshed on every request, so a
+    revoked upstream session fails regardless of this value.
+    """
+    raw = os.getenv("WORKSPACE_MCP_FASTMCP_ACCESS_TOKEN_EXPIRY_SECONDS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "OAuth 2.1: Ignoring non-integer WORKSPACE_MCP_FASTMCP_ACCESS_TOKEN_EXPIRY_SECONDS=%r",
+            raw,
+        )
+        return None
+    if value <= 0:
+        logger.warning(
+            "OAuth 2.1: Ignoring non-positive WORKSPACE_MCP_FASTMCP_ACCESS_TOKEN_EXPIRY_SECONDS=%d",
+            value,
+        )
+        return None
+    return value
+
+
 def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
     """Parse a comma-separated list of OAuth client redirect URIs.
 
@@ -543,17 +582,32 @@ def configure_server_for_http():
                         "OAuth 2.1: Applied Fernet encryption wrapper to Valkey client_storage (key derived from FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY or GOOGLE_OAUTH_CLIENT_SECRET)."
                     )
                 except ImportError as exc:
-                    logger.warning(
-                        "OAuth 2.1: Valkey client_storage requested but Valkey dependencies are not installed (%s). "
-                        "Install 'workspace-mcp[valkey]' (or 'py-key-value-aio[valkey]', which includes 'valkey-glide') "
-                        "or unset WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND/WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST.",
-                        exc,
-                    )
+                    if _allow_storage_fallback():
+                        logger.warning(
+                            "OAuth 2.1: Valkey client_storage requested but Valkey dependencies are not installed (%s). "
+                            "Install 'workspace-mcp[valkey]' (or 'py-key-value-aio[valkey]', which includes 'valkey-glide') "
+                            "or unset WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND/WORKSPACE_MCP_OAUTH_PROXY_VALKEY_HOST.",
+                            exc,
+                        )
+                    else:
+                        raise RuntimeError(
+                            "OAuth 2.1: Valkey client_storage requested but Valkey dependencies are not installed. "
+                            "An in-memory fallback would invalidate every user's connection on restart, so startup is "
+                            "aborted. Rebuild the image with 'uv sync --extra valkey', or set "
+                            "WORKSPACE_MCP_OAUTH_PROXY_ALLOW_STORAGE_FALLBACK=true to accept in-memory storage."
+                        ) from exc
                 except ValueError as exc:
-                    logger.warning(
-                        "OAuth 2.1: Invalid Valkey configuration; falling back to default storage (%s).",
-                        exc,
-                    )
+                    if _allow_storage_fallback():
+                        logger.warning(
+                            "OAuth 2.1: Invalid Valkey configuration; falling back to default storage (%s).",
+                            exc,
+                        )
+                    else:
+                        raise RuntimeError(
+                            "OAuth 2.1: Invalid Valkey configuration and in-memory fallback is disabled. "
+                            "Fix WORKSPACE_MCP_OAUTH_PROXY_VALKEY_* or set "
+                            "WORKSPACE_MCP_OAUTH_PROXY_ALLOW_STORAGE_FALLBACK=true."
+                        ) from exc
             elif use_disk:
                 try:
                     from core.storage import make_sanitized_file_store
@@ -644,6 +698,13 @@ def configure_server_for_http():
                         "OAuth 2.1: restricting DCR client redirect URIs to allowlist: %s",
                         allowed_client_redirect_uris,
                     )
+                access_token_expiry = _fastmcp_access_token_expiry_seconds()
+                if access_token_expiry is not None:
+                    logger.info(
+                        "OAuth 2.1: FastMCP-issued access token lifetime set to %d seconds "
+                        "(upstream Google token still refreshed per request)",
+                        access_token_expiry,
+                    )
                 provider = GoogleProvider(
                     client_id=config.client_id,
                     client_secret=config.client_secret,
@@ -654,6 +715,7 @@ def configure_server_for_http():
                     client_storage=client_storage,
                     jwt_signing_key=jwt_signing_key,
                     allowed_client_redirect_uris=allowed_client_redirect_uris,
+                    fastmcp_access_token_expiry_seconds=access_token_expiry,
                 )
                 if provider.client_registration_options is not None:
                     # Keep protocol-level auth limited to base identity scopes, but
