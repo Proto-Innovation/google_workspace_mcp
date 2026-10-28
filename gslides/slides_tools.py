@@ -7,6 +7,7 @@ This module provides MCP tools for interacting with Google Slides API.
 import json
 import logging
 import asyncio
+import os
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import base64
@@ -17,7 +18,7 @@ from mcp.types import ImageContent, TextContent, ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import handle_http_errors
+from core.utils import UserInputError, handle_http_errors
 from core.comments import create_comment_tools
 from gslides.slides_helpers import (
     validate_batch_update_requests,
@@ -867,6 +868,99 @@ You can view or download the thumbnail using the provided URL."""
     return ToolResult(
         content=[TextContent(type="text", text=confirmation_message), image],
         structured_content={"result": confirmation_message},
+    )
+
+
+@server.tool(
+    title="Insert Slide Image From Drive",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("insert_slide_image_from_drive", service_type="script")
+@require_google_service("script", "script_run")
+async def insert_slide_image_from_drive(
+    service,
+    user_google_email: str,
+    presentation_id: str,
+    page_object_id: str,
+    drive_file_id: str,
+    left_emu: int,
+    top_emu: int,
+    width_emu: int,
+    height_emu: int,
+    replace_object_id: Optional[str] = None,
+) -> str:
+    """
+    Place a Drive image (e.g. an animated GIF) on a slide without making the file public.
+
+    The Slides API can only insert images from public URLs. This runs Proto's deployed
+    deck-motion Apps Script as the calling user, which reads the private Drive file and
+    inserts it, fitted inside the box with its aspect ratio kept and centered.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        presentation_id (str): The presentation to insert into.
+        page_object_id (str): The slide's page object ID.
+        drive_file_id (str): The Drive file ID of the image (PNG/JPEG/GIF, under 50 MB).
+        left_emu (int): Left edge of the target box, in EMU.
+        top_emu (int): Top edge of the target box, in EMU.
+        width_emu (int): Width of the target box, in EMU.
+        height_emu (int): Height of the target box, in EMU.
+        replace_object_id (Optional[str]): An earlier image on the slide to remove first.
+
+    Returns:
+        str: The inserted image's object ID, mode (inserted, replaced or
+        inserted_replace_missing) and its final size and position in points.
+    """
+    script_id = os.environ.get("DECK_MOTION_SCRIPT_ID")
+    if not script_id:
+        raise UserInputError(
+            "deck-motion insert script is not configured (DECK_MOTION_SCRIPT_ID)"
+        )
+    for name, value in (("width_emu", width_emu), ("height_emu", height_emu)):
+        if not isinstance(value, int) or value <= 0:
+            raise UserInputError(f"{name} must be a positive integer")
+    for name, value in (("left_emu", left_emu), ("top_emu", top_emu)):
+        if not isinstance(value, int) or value < 0:
+            raise UserInputError(f"{name} must be a non-negative integer")
+
+    logger.info(
+        f"[insert_slide_image_from_drive] Email: '{user_google_email}', "
+        f"Presentation: '{presentation_id}', Page: '{page_object_id}', File: '{drive_file_id}'"
+    )
+    box = {"left": left_emu, "top": top_emu, "width": width_emu, "height": height_emu}
+    body = {
+        "function": "insertMotionGif",
+        "devMode": False,
+        "parameters": [
+            presentation_id,
+            page_object_id,
+            drive_file_id,
+            box,
+            replace_object_id,
+        ],
+    }
+    response = await asyncio.to_thread(
+        service.scripts().run(scriptId=script_id, body=body).execute
+    )
+
+    if "error" in response:
+        error = response["error"]
+        details = error.get("details") or [{}]
+        message = details[0].get("errorMessage") or error.get(
+            "message", "Unknown error"
+        )
+        return f"Insert failed: {message}"
+
+    result = response.get("response", {}).get("result", {})
+    return (
+        f"Inserted image {result.get('objectId')} on page {page_object_id} "
+        f"(mode: {result.get('mode')}, {result.get('widthPt')}×{result.get('heightPt')} pt "
+        f"at {result.get('leftPt')},{result.get('topPt')})"
     )
 
 

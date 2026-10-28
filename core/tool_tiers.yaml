@@ -129,6 +129,7 @@ slides:
     - batch_update_presentation
     - get_page
     - get_page_thumbnail
+    - insert_slide_image_from_drive
   complete:
     - list_presentation_comments
     - manage_presentation_comment
