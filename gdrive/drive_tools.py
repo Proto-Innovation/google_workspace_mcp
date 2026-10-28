@@ -6,16 +6,19 @@ This module provides MCP tools for interacting with Google Drive API.
 
 import asyncio
 import base64
+import binascii
+import json
 import logging
 import io
 import os
 
 from typing import Optional, List, Dict, Any
 from tempfile import NamedTemporaryFile, SpooledTemporaryFile
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import url2pathname
 from pathlib import Path
 
+import httpx
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -44,6 +47,7 @@ from core.utils import (
     encode_image_content,
     OfficeXmlExtractionError,
     OfficeXmlTooLargeError,
+    UserInputError,
     extract_office_xml_text,
     extract_pdf_text,
     handle_http_errors,
@@ -2859,3 +2863,98 @@ async def set_drive_file_permissions(
     output_parts.extend(["", f"View link: {file_metadata.get('webViewLink', 'N/A')}"])
 
     return "\n".join(output_parts)
+
+
+# Drive requires every resumable chunk except the last to be a multiple of 256 KiB.
+RESUMABLE_CHUNK_GRANULARITY = 256 * 1024
+
+
+def _validate_drive_session_url(upload_url: str) -> None:
+    """Accept only a Drive resumable upload session URL, so this tool can't be
+    pointed at any other host (the server forwards bytes to it)."""
+    parsed = urlparse(upload_url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "www.googleapis.com"
+        or not parsed.path.startswith("/upload/drive/v3/files")
+        or "upload_id" not in parse_qs(parsed.query)
+    ):
+        raise UserInputError(
+            "upload_url must be a Google Drive resumable upload session URL "
+            "(from create_drive_file or update_drive_file with return_upload_url=true)."
+        )
+
+
+@server.tool(
+    title="Upload Drive File Chunk",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("upload_drive_file_chunk", service_type="drive")
+async def upload_drive_file_chunk(
+    upload_url: str,
+    offset: int,
+    total_size: int,
+    chunk_base64: str,
+) -> str:
+    """
+    Send one piece of a file to a Drive resumable upload session.
+
+    For clients that can't reach Google themselves (e.g. a claude.ai artifact page):
+    open a session with create_drive_file(return_upload_url=true), then send the file
+    in order, piece by piece. Every piece except the last must be a multiple of
+    262144 bytes (256 KiB); 512 KiB pieces keep each call under 1 MiB of base64.
+
+    Args:
+        upload_url (str): The session URL returned by create_drive_file or update_drive_file.
+        offset (int): Byte offset of this piece within the whole file.
+        total_size (int): Size of the whole file in bytes.
+        chunk_base64 (str): This piece's bytes, base64-encoded.
+
+    Returns:
+        str: JSON. {"status": "incomplete", "next_offset": N} while more is expected, or
+        {"status": "complete", "file_id": ..., "name": ...} once the file exists.
+    """
+    _validate_drive_session_url(upload_url)
+    try:
+        chunk = base64.b64decode(chunk_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise UserInputError("chunk_base64 is not valid base64.") from exc
+    if not chunk:
+        raise UserInputError("chunk_base64 is empty.")
+    if offset < 0 or total_size <= 0:
+        raise UserInputError("offset must be >= 0 and total_size > 0.")
+    end = offset + len(chunk)
+    if end > total_size:
+        raise UserInputError(
+            f"This piece runs past total_size ({offset}+{len(chunk)} > {total_size})."
+        )
+    if end < total_size and len(chunk) % RESUMABLE_CHUNK_GRANULARITY:
+        raise UserInputError(
+            f"Every piece except the last must be a multiple of {RESUMABLE_CHUNK_GRANULARITY} bytes."
+        )
+
+    headers = {"Content-Range": f"bytes {offset}-{end - 1}/{total_size}"}
+    async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+        response = await client.put(upload_url, content=chunk, headers=headers)
+
+    if response.status_code == 308:
+        received = response.headers.get("Range")
+        next_offset = int(received.rsplit("-", 1)[1]) + 1 if received else 0
+        return json.dumps({"status": "incomplete", "next_offset": next_offset})
+    if response.status_code in (200, 201):
+        meta = response.json()
+        return json.dumps(
+            {"status": "complete", "file_id": meta.get("id"), "name": meta.get("name")}
+        )
+    if response.status_code in (404, 410):
+        raise UserInputError(
+            "The upload session is no longer valid (expired or already finished); start a new upload."
+        )
+    raise Exception(
+        f"Drive rejected the piece (HTTP {response.status_code}): {response.text[:300]}"
+    )
