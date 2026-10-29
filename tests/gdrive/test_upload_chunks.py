@@ -58,6 +58,9 @@ async def _call(**kw):
         "https://www.googleapis.com/drive/v3/files?upload_id=ABC",
         "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
         "https://www.googleapis.com.evil.example/upload/drive/v3/files?upload_id=ABC",
+        "https://www.googleapis.com/upload/drive/v3/files/../../../storage/v1/b?upload_id=ABC",
+        "https://www.googleapis.com/upload/drive/v3/files/%2e%2e/x?upload_id=ABC",
+        "https://www.googleapis.com/upload/drive/v3/filesX?upload_id=ABC",
     ],
 )
 async def test_rejects_anything_but_a_drive_upload_session(url):
@@ -65,6 +68,27 @@ async def test_rejects_anything_but_a_drive_upload_session(url):
         await _call(
             upload_url=url, chunk_base64=base64.b64encode(b"x" * CHUNK).decode()
         )
+
+
+@pytest.mark.asyncio
+async def test_accepts_an_update_session_on_a_file_id(monkeypatch):
+    seen = []
+    _transport(
+        monkeypatch,
+        lambda r: httpx.Response(308, headers={"Range": "bytes=0-262143"}),
+        seen,
+    )
+    url = "https://www.googleapis.com/upload/drive/v3/files/1AbC_d-9?uploadType=resumable&upload_id=ABC"
+    out = await _call(
+        upload_url=url, chunk_base64=base64.b64encode(b"x" * CHUNK).decode()
+    )
+    assert json.loads(out) == {"status": "incomplete", "next_offset": CHUNK}
+
+
+@pytest.mark.asyncio
+async def test_rejects_an_oversized_piece_before_decoding():
+    with pytest.raises(UserInputError, match="too large"):
+        await _call(chunk_base64="A" * (2 * 1024 * 1024))
 
 
 @pytest.mark.asyncio

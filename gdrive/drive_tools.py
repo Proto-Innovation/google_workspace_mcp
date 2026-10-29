@@ -11,6 +11,7 @@ import json
 import logging
 import io
 import os
+import re
 
 from typing import Optional, List, Dict, Any
 from tempfile import NamedTemporaryFile, SpooledTemporaryFile
@@ -2869,14 +2870,20 @@ async def set_drive_file_permissions(
 RESUMABLE_CHUNK_GRANULARITY = 256 * 1024
 
 
+_DRIVE_SESSION_PATH = re.compile(r"/upload/drive/v3/files(/[A-Za-z0-9_-]+)?")
+# A 512 KiB piece is about 700k base64 characters; anything far past that is refused unread.
+_MAX_CHUNK_BASE64_CHARS = 1536 * 1024
+
+
 def _validate_drive_session_url(upload_url: str) -> None:
     """Accept only a Drive resumable upload session URL, so this tool can't be
-    pointed at any other host (the server forwards bytes to it)."""
+    pointed at any other host or API (the server forwards bytes to it). The path
+    must be exactly the files endpoint or one file ID under it: no dot segments."""
     parsed = urlparse(upload_url)
     if (
         parsed.scheme != "https"
         or parsed.netloc != "www.googleapis.com"
-        or not parsed.path.startswith("/upload/drive/v3/files")
+        or not _DRIVE_SESSION_PATH.fullmatch(parsed.path)
         or "upload_id" not in parse_qs(parsed.query)
     ):
         raise UserInputError(
@@ -2920,6 +2927,10 @@ async def upload_drive_file_chunk(
         {"status": "complete", "file_id": ..., "name": ...} once the file exists.
     """
     _validate_drive_session_url(upload_url)
+    if len(chunk_base64) > _MAX_CHUNK_BASE64_CHARS:
+        raise UserInputError(
+            "chunk_base64 is too large; send pieces of 512 KiB or less."
+        )
     try:
         chunk = base64.b64decode(chunk_base64, validate=True)
     except (binascii.Error, ValueError) as exc:
